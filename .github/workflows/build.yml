@@ -1,4 +1,4 @@
-name: Build Custom GKI Kernel (Wild KSU + SUSFS + BBRv3)
+name: Build Custom GKI Kernel (Wild KSU + SUSFS + BBRv3 + Vorpal + Neutron Clang)
 
 on:
   workflow_dispatch:
@@ -23,11 +23,19 @@ on:
 env:
   VERSION: android12-5.10
   CCACHE_DIR: /home/runner/.ccache
+  # --- Custom kernel source ---
+  KERNEL_SOURCE_URL: https://github.com/MillenniumOSS/android_kernel_common_android12-5.10
+  KERNEL_SOURCE_BRANCH: millennium-base
+  # --- Vorpal governor donor repo ---
+  VORPAL_SOURCE_URL: https://github.com/Steambot12/Templar-Kernel-GKI-5.10
+  VORPAL_SOURCE_BRANCH: Templar-LinuxStable
+  # --- Neutron Clang ---
+  NEUTRON_CLANG_DIR: /home/runner/neutron-clang
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 150
+    timeout-minutes: 180
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -56,12 +64,21 @@ jobs:
       - name: Set up ccache
         run: mkdir -p "${{ env.CCACHE_DIR }}"
 
-      - name: Sync GKI kernel source
+      - name: Sync GKI scaffolding (prebuilts/toolchains only)
         run: |
           mkdir kernel_workspace && cd kernel_workspace
           repo init -u https://android.googlesource.com/kernel/manifest \
             -b common-${{ env.VERSION }}-${{ github.event.inputs.os_patch_level }} --depth=1
           repo sync -c --current-branch --no-clone-bundle --no-tags -j"$(nproc)"
+
+      - name: Replace kernel source with MillenniumOSS
+        working-directory: kernel_workspace
+        run: |
+          set -euo pipefail
+          rm -rf common
+          git clone --depth=1 -b "${{ env.KERNEL_SOURCE_BRANCH }}" "${{ env.KERNEL_SOURCE_URL }}" common
+          echo "KERNEL_SOURCE_COMMIT=$(git -C common rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "Using kernel source: $(git -C common rev-parse HEAD) — $(git -C common log -1 --format=%s)"
 
       - name: Detect kernel sublevel
         working-directory: kernel_workspace
@@ -97,11 +114,11 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
             echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
-            
+
             # --- PTRACE FIXES & HARDENING CONFIGS ---
             echo "CONFIG_HAVE_ARCH_PTRACE=y"
             echo "CONFIG_PTRACE=y"
-            
+
             # --- FULL eBPF SUPPORT CONFIGS & PATCHES ---
             echo "CONFIG_BPF=y"
             echo "CONFIG_BPF_SYSCALL=y"
@@ -114,7 +131,7 @@ jobs:
             echo "CONFIG_BPF_EVENTS=y"
             echo "CONFIG_BPF_STREAM_PARSER=y"
             echo "CONFIG_LWTUNNEL_BPF=y"
-            
+
             # --- UNICODE & UTF-8 FIXES CONFIGS ---
             echo "CONFIG_UNICODE=y"
             echo "CONFIG_NLS_UTF8=y"
@@ -195,7 +212,7 @@ jobs:
           +++ b/kernel/feature/selinux_hide.c
           @@ -35,12 +35,12 @@ bool ksu_selinux_hide_enabled __read_mostly = false;
            bool ksu_selinux_hide_running __read_mostly = false;
-           
+
            #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
           -static int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
           -                                               u32 *sid, u32 def_sid, gfp_t gfp_flags);
@@ -255,6 +272,50 @@ jobs:
         run: |
           cd kernel_workspace/common/arch/arm64/configs
           echo "CONFIG_BBG=y" >> gki_defconfig
+
+      - name: Pull Vorpal governor from Templar-Kernel-GKI-5.10
+        working-directory: kernel_workspace
+        run: |
+          set -euo pipefail
+          git clone --depth=1 -b "${{ env.VORPAL_SOURCE_BRANCH }}" "${{ env.VORPAL_SOURCE_URL }}" /tmp/templar-src
+          echo "VORPAL_SOURCE_COMMIT=$(git -C /tmp/templar-src rev-parse HEAD)" >> "$GITHUB_ENV"
+
+          cd common/drivers/cpufreq
+          VORPAL_FILES_FOUND=0
+          for f in /tmp/templar-src/drivers/cpufreq/*vorpal*; do
+            [ -e "$f" ] || continue
+            cp -v "$f" .
+            VORPAL_FILES_FOUND=1
+          done
+
+          if [ "$VORPAL_FILES_FOUND" -eq 0 ]; then
+            echo "::error::No files matching 'vorpal' found in Templar-Kernel drivers/cpufreq — governor may live under a different path/name in that repo. Build stopping here so it doesn't silently skip it; tell me the exact file path/CONFIG symbol and I'll fix this step."
+            exit 1
+          fi
+
+          # Register in Kconfig if not already present
+          if ! grep -qi "vorpal" Kconfig; then
+            cat >> Kconfig << 'VORPAL_KCONFIG_EOF'
+
+          config CPU_FREQ_GOV_VORPAL
+          	tristate "'vorpal' cpufreq governor"
+          	depends on CPU_FREQ
+          	help
+          	  Vorpal cpufreq governor, ported from Templar-Kernel-GKI-5.10.
+          VORPAL_KCONFIG_EOF
+          fi
+
+          # Register in Makefile if not already present
+          if ! grep -qi "vorpal" Makefile; then
+            echo 'obj-$(CONFIG_CPU_FREQ_GOV_VORPAL)	+= cpufreq_vorpal.o' >> Makefile
+          fi
+
+      - name: Enable Vorpal governor config
+        run: |
+          cd kernel_workspace/common/arch/arm64/configs
+          {
+            echo "CONFIG_CPU_FREQ_GOV_VORPAL=y"
+          } >> gki_defconfig
 
       - name: Apply BBRv3 backport
         working-directory: kernel_workspace/common
@@ -389,30 +450,45 @@ jobs:
         working-directory: kernel_workspace
         run: sed -i 's/check_defconfig//' ./common/build.config.gki
 
+      - name: Set up Neutron Clang
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ env.NEUTRON_CLANG_DIR }}"
+          cd "${{ env.NEUTRON_CLANG_DIR }}"
+          curl -LSs -o antman https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
+          chmod +x antman
+          ./antman -S
+          echo "${{ env.NEUTRON_CLANG_DIR }}/bin" >> "$GITHUB_PATH"
+          "${{ env.NEUTRON_CLANG_DIR }}/bin/clang" --version
+
       - name: Ensure generic ld exists for tools that don't pass -fuse-ld=lld
         working-directory: kernel_workspace
         run: |
           set -euo pipefail
-          LLD_PATH=$(find prebuilts-master -type f -name 'ld.lld' | head -n1)
-          if [ -n "$LLD_PATH" ]; then
+          LLD_PATH="${{ env.NEUTRON_CLANG_DIR }}/bin/ld.lld"
+          if [ -f "$LLD_PATH" ]; then
             BIN_DIR=$(dirname "$LLD_PATH")
             [ -e "$BIN_DIR/ld" ] || ln -s ld.lld "$BIN_DIR/ld"
             echo "Symlinked ld -> ld.lld in $BIN_DIR"
           else
-            echo "::warning::no ld.lld found under prebuilts-master"
+            echo "::warning::no ld.lld found under ${{ env.NEUTRON_CLANG_DIR }}"
           fi
 
-      - name: Build kernel
+      - name: Build kernel (Neutron Clang)
         working-directory: kernel_workspace
         run: |
           set -euo pipefail
           export KBUILD_BUILD_USER="builder"
           export KBUILD_BUILD_HOST="ci"
+          export PATH="${{ env.NEUTRON_CLANG_DIR }}/bin:$PATH"
           LTO=thin \
           SKIP_MRPROPER=1 \
           BUILD_CONFIG=common/build.config.gki.aarch64 \
           USE_CCACHE=1 \
           CCACHE_DIR="${{ env.CCACHE_DIR }}" \
+          LLVM=1 \
+          LLVM_IAS=1 \
+          CC=clang \
           build/build.sh -j"$(nproc)"
 
       - name: Locate built Image
@@ -436,7 +512,7 @@ jobs:
           git clone --depth=1 https://github.com/WildKernels/AnyKernel3.git -b gki-2.0 ak3
           cp "${{ env.IMG_PATH }}" ak3/Image
           cd ak3
-          zip -r9 -q "../${{ github.event.inputs.device_name }}-Blaze-android12-5.10-susfs${SUSFS_COMMIT:0:8}.zip" . -x ".git*"
+          zip -r9 -q "../${{ github.event.inputs.device_name }}-Blaze-Vorpal-Neutron-android12-5.10-susfs${SUSFS_COMMIT:0:8}.zip" . -x ".git*"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
