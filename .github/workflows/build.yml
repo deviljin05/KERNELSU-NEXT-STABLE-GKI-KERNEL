@@ -416,33 +416,52 @@ jobs:
             echo "::warning::no ld.lld found under ${{ env.NEUTRON_CLANG_DIR }}"
           fi
 
-      - name: Build kernel (Neutron Clang)
-        working-directory: kernel_workspace
+      # NOTE: This step no longer calls build/build.sh. That AOSP wrapper script
+      # sources build.config → _setup_env.sh, which resolves CLANG_PREBUILT_BIN
+      # to Google's own prebuilt clang and prepends it onto PATH — silently
+      # overriding Neutron Clang even when CC=clang and PATH were already set.
+      # Calling `make` directly (same approach GKID-Kernels uses) avoids that
+      # override entirely, so the toolchain we just installed is the one that
+      # actually compiles the kernel.
+      - name: Build kernel (Neutron Clang, direct make — bypasses AOSP toolchain override)
+        working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
           export KBUILD_BUILD_USER="builder"
           export KBUILD_BUILD_HOST="ci"
           export PATH="${{ env.NEUTRON_CLANG_DIR }}/bin:$PATH"
-          LTO=thin \
-          SKIP_MRPROPER=1 \
-          BUILD_CONFIG=common/build.config.gki.aarch64 \
-          USE_CCACHE=1 \
-          CCACHE_DIR="${{ env.CCACHE_DIR }}" \
-          LLVM=1 \
-          LLVM_IAS=1 \
-          CC=clang \
-          build/build.sh -j"$(nproc)"
+          export CC="${{ env.NEUTRON_CLANG_DIR }}/bin/clang"
+          export CXX="${{ env.NEUTRON_CLANG_DIR }}/bin/clang++"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+
+          MAKE_ARGS=(
+            LLVM=1
+            LLVM_IAS=1
+            ARCH=arm64
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+            CC="ccache $CC"
+            CXX="ccache $CXX"
+            O=out
+            -j"$(nproc)"
+          )
+
+          echo "::group::[*] Generating defconfig"
+          make "${MAKE_ARGS[@]}" gki_defconfig
+          echo "::endgroup::"
+
+          echo "::group::[*] Building kernel"
+          make "${MAKE_ARGS[@]}"
+          echo "::endgroup::"
 
       - name: Locate built Image
         working-directory: kernel_workspace
         run: |
           set -euo pipefail
-          IMG=$(find out -path "*dist/Image" | head -n1)
-          if [ -z "$IMG" ]; then
-            IMG=$(find out -name "Image" | head -n1)
-          fi
-          if [ -z "$IMG" ]; then
-            echo "::error::No kernel Image found anywhere under kernel_workspace/out — build failed above"
+          IMG="common/out/arch/arm64/boot/Image"
+          if [ ! -f "$IMG" ]; then
+            echo "::error::No kernel Image found at $IMG — build failed above"
+            find common/out -name "Image" 2>/dev/null || true
             exit 1
           fi
           echo "Found Image at: $IMG"
@@ -477,7 +496,8 @@ jobs:
           if [ -n "$CLANG_VER" ] && [ -n "$NEUTRON_VER" ] && [ "$CLANG_VER" = "$NEUTRON_VER" ]; then
             echo "✓ Kernel Image clang version ($CLANG_VER) matches the Neutron Clang toolchain used in this run ($NEUTRON_VER)."
           else
-            echo "::warning::Clang major version embedded in Image ($CLANG_VER) does not clearly match the Neutron Clang toolchain used in this run ($NEUTRON_VER) — double-check the build actually picked up Neutron Clang and not a prebuilt AOSP clang."
+            echo "::error::Clang major version embedded in Image ($CLANG_VER) does not match the Neutron Clang toolchain used in this run ($NEUTRON_VER) — Neutron Clang was NOT used to compile the kernel."
+            exit 1
           fi
 
       - name: Package AnyKernel3
