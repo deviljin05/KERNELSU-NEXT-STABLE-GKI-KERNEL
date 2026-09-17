@@ -87,7 +87,6 @@ jobs:
           cd kernel_workspace/common/arch/arm64/configs
           {
             echo "CONFIG_KSU=y"
-            echo "CONFIG_KPROBES=y"
             echo "CONFIG_KSU_SUSFS=y"
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
@@ -179,11 +178,42 @@ jobs:
             sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
           fi
 
-      - name: Setup KernelSU (KOWX712 fork - tagged release)
+      - name: Setup KernelSU-Next (Wild KSU, dev-susfs)
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/main/kernel/setup.sh" | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+
+      - name: Fix KernelSU-Next (static.patch)
+        working-directory: kernel_workspace/common/KernelSU-Next
+        run: |
+          set -euo pipefail
+          cat > static.patch << 'STATIC_PATCH_EOF'
+          diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+          index e1384d9..56e4cfe 100644
+          --- a/kernel/feature/selinux_hide.c
+          +++ b/kernel/feature/selinux_hide.c
+          @@ -35,12 +35,12 @@ bool ksu_selinux_hide_enabled __read_mostly = false;
+           bool ksu_selinux_hide_running __read_mostly = false;
+           
+           #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+          -static int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
+          -                                               u32 *sid, u32 def_sid, gfp_t gfp_flags);
+          -static int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
+          -                                               u32 *scontext_len);
+          -static void security_compute_av_user_with_policy(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass,
+          -                                                 struct av_decision *avd);
+          +int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
+          +                                        u32 *sid, u32 def_sid, gfp_t gfp_flags);
+          +int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
+          +                                        u32 *scontext_len);
+          +void security_compute_av_user_with_policy(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass,
+          +                                          struct av_decision *avd);
+           static void (*security_dump_masked_av_fn)(struct policydb *policydb, struct context *scontext, struct context *tcontext,
+                                                     u16 tclass, u32 permissions, const char *reason) = NULL;
+           static void (*context_struct_compute_av_fn)(struct policydb *policydb, struct context *scontext,
+          STATIC_PATCH_EOF
+          patch -p1 --forward < static.patch || echo "::warning::static.patch did not apply — may already be fixed upstream, not fatal"
 
       - name: Install Baseband Guard (BBG)
         if: ${{ github.event.inputs.enable_bbg == 'true' }}
