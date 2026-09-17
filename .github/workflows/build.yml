@@ -23,9 +23,6 @@ on:
 env:
   VERSION: android12-5.10
   CCACHE_DIR: /home/runner/.ccache
-  # --- Custom kernel source ---
-  KERNEL_SOURCE_URL: https://github.com/MillenniumOSS/android_kernel_common_android12-5.10
-  KERNEL_SOURCE_BRANCH: millennium-base
   # --- Vorpal governor donor repo ---
   VORPAL_SOURCE_URL: https://github.com/Steambot12/Templar-Kernel-GKI-5.10
   VORPAL_SOURCE_BRANCH: Templar-LinuxStable
@@ -64,21 +61,12 @@ jobs:
       - name: Set up ccache
         run: mkdir -p "${{ env.CCACHE_DIR }}"
 
-      - name: Sync GKI scaffolding (prebuilts/toolchains only)
+      - name: Sync GKI kernel source (Google AOSP LTS)
         run: |
           mkdir kernel_workspace && cd kernel_workspace
           repo init -u https://android.googlesource.com/kernel/manifest \
             -b common-${{ env.VERSION }}-${{ github.event.inputs.os_patch_level }} --depth=1
           repo sync -c --current-branch --no-clone-bundle --no-tags -j"$(nproc)"
-
-      - name: Replace kernel source with MillenniumOSS
-        working-directory: kernel_workspace
-        run: |
-          set -euo pipefail
-          rm -rf common
-          git clone --depth=1 -b "${{ env.KERNEL_SOURCE_BRANCH }}" "${{ env.KERNEL_SOURCE_URL }}" common
-          echo "KERNEL_SOURCE_COMMIT=$(git -C common rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "Using kernel source: $(git -C common rev-parse HEAD) — $(git -C common log -1 --format=%s)"
 
       - name: Detect kernel sublevel
         working-directory: kernel_workspace
