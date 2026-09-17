@@ -446,6 +446,7 @@ jobs:
           curl -LSs -o antman https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
           chmod +x antman
           ./antman -S
+          ./antman --patch=glibc
           echo "${{ env.NEUTRON_CLANG_DIR }}/bin" >> "$GITHUB_PATH"
           "${{ env.NEUTRON_CLANG_DIR }}/bin/clang" --version
 
