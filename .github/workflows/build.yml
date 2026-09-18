@@ -473,11 +473,6 @@ jobs:
           export CXX="${{ env.NEUTRON_CLANG_DIR }}/bin/clang++"
           export CCACHE_DIR="${{ env.CCACHE_DIR }}"
 
-          # Newer LLVM releases turn some old-C warnings into hard errors
-          # that Linux 5.10-era kernel source still trips (implicit
-          # function declarations, K&R-style prototypes, etc). Relaxing
-          # these back to warnings is the standard fix devs use when
-          # building older kernel trees with a newer Neutron Clang.
           EXTRA_CFLAGS="-Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=strict-prototypes -Wno-error=incompatible-pointer-types -Wno-error=int-conversion"
 
           MAKE_ARGS=(
@@ -507,33 +502,14 @@ jobs:
           make "${MAKE_ARGS[@]}" gki_defconfig
           echo "::endgroup::"
 
-          # build/build.sh normally does this switch when LTO=thin is passed
-          # to it. Since we call make directly, gki_defconfig's default LTO
-          # setting (often Full LTO) stays as-is unless we force it here —
-          # Full LTO's vmlinux.o link step is far more memory-hungry and is
-          # what was OOM-killing the build on the runner.
-          echo "::group::[*] Forcing Thin LTO"
+          echo "::group::[*] Disabling LTO + CFI (Neutron Clang compatibility)"
           ./scripts/config --file out/.config \
-            -e LTO_CLANG \
-            -d LTO_NONE \
-            -e LTO_CLANG_THIN \
-            -d LTO_CLANG_FULL
-          make "${MAKE_ARGS[@]}" olddefconfig
-          echo "::endgroup::"
-
-          # CFI (Control Flow Integrity) checks a function-pointer call's
-          # type-hash against the caller's compiler-generated table. That
-          # hash is compiler-version-specific: if the kernel is built with
-          # Neutron Clang while the vendor's prebuilt closed-source modules
-          # (Wi-Fi/GPU/etc.) were built with a different Clang version, the
-          # hashes won't match and CFI_CLANG's default behavior is to PANIC
-          # on the mismatch — an instant bootloop the moment such a module
-          # function is called. CFI_PERMISSIVE keeps CFI's other protections
-          # but turns that specific panic into a logged warning instead.
-          echo "::group::[*] Relaxing CFI to permissive (cross-compiler vendor module safety)"
-          ./scripts/config --file out/.config \
-            -e CFI_CLANG \
-            -e CFI_PERMISSIVE
+            -d LTO_CLANG \
+            -d LTO_CLANG_THIN \
+            -d LTO_CLANG_FULL \
+            -e LTO_NONE \
+            -d CFI_CLANG \
+            -d CFI_PERMISSIVE
           make "${MAKE_ARGS[@]}" olddefconfig
           echo "::endgroup::"
 
