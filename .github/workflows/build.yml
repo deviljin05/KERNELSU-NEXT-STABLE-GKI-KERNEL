@@ -416,6 +416,18 @@ jobs:
             echo "::warning::no ld.lld found under ${{ env.NEUTRON_CLANG_DIR }}"
           fi
 
+      # Extra headroom for the LTO link step (vmlinux.o), which can spike
+      # memory even under Thin LTO. GitHub-hosted runners have no swap by
+      # default, so a single bad allocation gets OOM-killed instead of paging.
+      - name: Add swap space
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 12G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       # NOTE: This step no longer calls build/build.sh. That AOSP wrapper script
       # sources build.config → _setup_env.sh, which resolves CLANG_PREBUILT_BIN
       # to Google's own prebuilt clang and prepends it onto PATH — silently
@@ -448,6 +460,20 @@ jobs:
 
           echo "::group::[*] Generating defconfig"
           make "${MAKE_ARGS[@]}" gki_defconfig
+          echo "::endgroup::"
+
+          # build/build.sh normally does this switch when LTO=thin is passed
+          # to it. Since we call make directly, gki_defconfig's default LTO
+          # setting (often Full LTO) stays as-is unless we force it here —
+          # Full LTO's vmlinux.o link step is far more memory-hungry and is
+          # what was OOM-killing the build on the runner.
+          echo "::group::[*] Forcing Thin LTO"
+          ./scripts/config --file out/.config \
+            -e LTO_CLANG \
+            -d LTO_NONE \
+            -e LTO_CLANG_THIN \
+            -d LTO_CLANG_FULL
+          make "${MAKE_ARGS[@]}" olddefconfig
           echo "::endgroup::"
 
           echo "::group::[*] Building kernel"
