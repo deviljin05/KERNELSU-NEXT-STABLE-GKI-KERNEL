@@ -422,6 +422,11 @@ jobs:
       - name: Add swap space
         run: |
           set -euo pipefail
+          # GitHub-hosted runners already ship an active swapfile at
+          # /swapfile — fallocate over it while it's swapon fails with
+          # "Text file busy", so turn it off and remove it first.
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
           sudo fallocate -l 12G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
