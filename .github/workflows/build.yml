@@ -502,12 +502,12 @@ jobs:
           make "${MAKE_ARGS[@]}" gki_defconfig
           echo "::endgroup::"
 
-          echo "::group::[*] Disabling LTO + CFI (Neutron Clang compatibility)"
+          echo "::group::[*] Keeping Thin LTO, disabling only CFI (Neutron Clang compatibility)"
           ./scripts/config --file out/.config \
-            -d LTO_CLANG \
-            -d LTO_CLANG_THIN \
+            -e LTO_CLANG \
+            -d LTO_NONE \
+            -e LTO_CLANG_THIN \
             -d LTO_CLANG_FULL \
-            -e LTO_NONE \
             -d CFI_CLANG \
             -d CFI_PERMISSIVE
           make "${MAKE_ARGS[@]}" olddefconfig
@@ -516,7 +516,7 @@ jobs:
           echo "::group::[*] Building kernel"
           make "${MAKE_ARGS[@]}"
           echo "::endgroup::"
-
+          
       - name: Locate built Image
         working-directory: kernel_workspace
         run: |
