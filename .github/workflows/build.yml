@@ -285,6 +285,17 @@ jobs:
             done
           fi
 
+      - name: Set vendor module (KMI) compatibility configs
+        run: |
+          cd kernel_workspace/common/arch/arm64/configs
+          # Vendor prebuilt closed-source modules (Wi-Fi, GPU, camera, etc.)
+          # reference kernel EXPORT_SYMBOLs that no in-tree code calls.
+          # TRIM_UNUSED_KSYMS strips exactly those "unused" symbols to save
+          # size, which then makes vendor modules fail to load at boot.
+          # Disabling it is the standard fix for custom-kernel bootloops
+          # caused by vendor module symbol mismatches.
+          echo "CONFIG_TRIM_UNUSED_KSYMS=n" >> gki_defconfig
+
       - name: Set networking / TCP congestion configs
         run: |
           cd kernel_workspace/common/arch/arm64/configs
@@ -455,6 +466,8 @@ jobs:
           set -euo pipefail
           export KBUILD_BUILD_USER="builder"
           export KBUILD_BUILD_HOST="ci"
+          export ARCH=arm64
+          export SUBARCH=arm64
           export PATH="${{ env.NEUTRON_CLANG_DIR }}/bin:$PATH"
           export CC="${{ env.NEUTRON_CLANG_DIR }}/bin/clang"
           export CXX="${{ env.NEUTRON_CLANG_DIR }}/bin/clang++"
@@ -478,6 +491,7 @@ jobs:
             CXX="ccache $CXX"
             HOSTCC="ccache $CC"
             HOSTCXX="ccache $CXX"
+            LD=ld.lld
             AR=llvm-ar
             NM=llvm-nm
             OBJCOPY=llvm-objcopy
@@ -504,6 +518,22 @@ jobs:
             -d LTO_NONE \
             -e LTO_CLANG_THIN \
             -d LTO_CLANG_FULL
+          make "${MAKE_ARGS[@]}" olddefconfig
+          echo "::endgroup::"
+
+          # CFI (Control Flow Integrity) checks a function-pointer call's
+          # type-hash against the caller's compiler-generated table. That
+          # hash is compiler-version-specific: if the kernel is built with
+          # Neutron Clang while the vendor's prebuilt closed-source modules
+          # (Wi-Fi/GPU/etc.) were built with a different Clang version, the
+          # hashes won't match and CFI_CLANG's default behavior is to PANIC
+          # on the mismatch — an instant bootloop the moment such a module
+          # function is called. CFI_PERMISSIVE keeps CFI's other protections
+          # but turns that specific panic into a logged warning instead.
+          echo "::group::[*] Relaxing CFI to permissive (cross-compiler vendor module safety)"
+          ./scripts/config --file out/.config \
+            -e CFI_CLANG \
+            -e CFI_PERMISSIVE
           make "${MAKE_ARGS[@]}" olddefconfig
           echo "::endgroup::"
 
